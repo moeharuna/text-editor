@@ -66,7 +66,7 @@ typedef struct editorState {
 editorState State;
 
 void editorSetStatusMessage(const char *fmt, ...);
-void editorRefershScreen();
+void editorRefreshScreen();
 char *editorPrompt(char *prompt);
 
 
@@ -216,10 +216,9 @@ void editorUpdateRow(erow *row)
 void editorInsertRow(int at, char *s, size_t len) {
   if (at < 0 || at > State.numrows) return;
 
-  State.row = realloc(State.row, sizeof(erow) + (State.numrows +1));
-  memmove(&State.row[at+1], &State.row[at], sizeof(erow) + (State.numrows - at));
-  
   State.row = realloc(State.row, sizeof(erow) * (State.numrows +1));
+  if(State.numrows != at) // if inserting not in end
+    memmove(&State.row[at+1], &State.row[at], sizeof(erow) + (State.numrows - at)); //shift rows right  
 
   State.row[at].size = len;
   State.row[at].chars = malloc(len+1);
@@ -346,7 +345,7 @@ void editorOpen(char *filename)
     while (linelen >0 && (line[linelen-1] == '\n' ||
 			  line[linelen-1] == '\r'))
       linelen--;
-    editorInsertRow(State.numrows, line,linelen);
+    editorInsertRow(State.numrows, line, linelen);
   }
   free(line);
   fclose(fp);
@@ -415,7 +414,7 @@ char *editorPrompt(char *prompt) {
 
   while (1) {
     editorSetStatusMessage(prompt, buf);
-    editorRefershScreen();
+    editorRefreshScreen();
 
     int c = editorReadKey();
     if (c== DELETE || c == CTRL_KEY('h') || c == BACKSPACE) {
