@@ -16,31 +16,13 @@
 #include <time.h>
 #include <stdarg.h>
 
-#ifndef TAB_SIZE
-#define TAB_SIZE 8
-#endif
+#include "keys.h"
+#include "map.h"
+#include "config.h"
 
-#ifndef QUIT_TIMES
-#define QUIT_TIMES 3
-#endif
 
-#define CTRL_KEY(k) ((k)&0x1f)
 
 typedef struct termios termios;
-
-enum editorCommands {
-  BACKSPACE = 127,
-  MOVE_UP = 1000,
-  MOVE_DOWN,
-  MOVE_LEFT,
-  MOVE_RIGHT,
-  PAGE_UP,
-  PAGE_DOWN,
-  LINE_START,
-  LINE_END,
-  DELETE,
-  QUIT  
-};
 
 typedef struct erow {
   int size;
@@ -58,12 +40,14 @@ typedef struct editorState {
   termios orig_termios;
   int numrows;
   erow *row;
+  map *key_map;
   int dirty;
   char *filename;
   char statusmsg[80];
   time_t statusmsg_time;
 }editorState;
 editorState State;
+
 
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
@@ -101,52 +85,6 @@ void enableRawMode(void) {
     fatal_error("enabeRawMode/setattr");
 }
 
-int editorReadKey()
-{
-  int nread;
-  char c;
-  while((nread = read(STDIN_FILENO, &c, 1)) != 1)
-    {
-      if(nread == -1 && errno != EAGAIN) fatal_error("read");
-    }
-  if( c== CTRL_KEY('q')) return QUIT;
-  if (c == '\x1b') {
-    char seq[3];
-
-    if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
-    if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
-    if (seq[0] == '[') {
-
-      if (seq[1] >= '0' &&  seq[1] <= '9') {
-	if(read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
-	if(seq[2] == '~') {
-	  switch (seq[1]) {
-	  case '1': return LINE_START;
-	  case '4': return LINE_END;
-	  case '3': return DELETE;
-	  case '5' : return PAGE_UP;
-	  case '6': return PAGE_DOWN;
-
-	  case '7': return LINE_START;
-	  case '8': return LINE_END;
-	  }
-	}
-      } else {
-      
-	switch (seq[1]) {
-	case 'A': return MOVE_UP;
-	case 'B': return MOVE_DOWN;
-	case 'C': return MOVE_RIGHT;
-	case 'D': return MOVE_LEFT;
-	case 'H': return LINE_START;
-	case 'F': return LINE_END;
-	}
-      }
-    }
-    return '\x1b';
-  } 
-  return c;
-}
 
 int getCursorPosition(int *rows, int *cols) {
   char buf[32];
@@ -405,6 +343,45 @@ void abFree(abuf *ab) {
 
 /*** input***/
 
+int editorReadKey()
+{
+  int nread;
+  char ch;
+  
+  while((nread = read(STDIN_FILENO, &ch, 1)) != 1)  {
+    if(nread == -1 && errno != EAGAIN) fatal_error("read");
+  }
+  
+  if (ch!= '\x1b') return ch;
+
+  char seq[3];
+
+  if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+  
+  if (read(STDIN_FILENO, &seq[1], 1) != 1 ) return ALT_KEY(seq[1]);
+  if (!strncmp(seq, "[A", 2)) return ARROW_UP;
+  if (!strncmp(seq, "[B", 2)) return ARROW_DOWN;
+  if (!strncmp(seq, "[C", 2)) return ARROW_RIGHT;
+  if (!strncmp(seq, "[D", 2)) return ARROW_LEFT;
+  if (!strncmp(seq, "[H", 2)) return HOME;
+  if (!strncmp(seq, "[F", 2)) return END;
+ 
+  if (read(STDIN_FILENO, &seq[2], 1) != 1) {
+    //TODO Log error
+    return '\x1b';
+  }
+  if (!strncmp(seq, "[8~", 3)) return END;
+  if (!strncmp(seq, "[1~", 3)) return HOME;
+  if (!strncmp(seq, "[4~", 3)) return END;
+  if (!strncmp(seq, "[3~", 3)) return DELETE;
+  if (!strncmp(seq, "[5~", 3)) return PAGE_UP;
+  if (!strncmp(seq, "[6~", 3)) return PAGE_DOWN;
+  if (!strncmp(seq, "[7~", 3)) return HOME;
+
+  //TODO: Log error
+  return '\x1b';
+}
+
 char *editorPrompt(char *prompt) {
   size_t buf_size = 128;
   char * buf = malloc(buf_size);
@@ -417,7 +394,7 @@ char *editorPrompt(char *prompt) {
     editorRefreshScreen();
 
     int c = editorReadKey();
-    if (c== DELETE || c == CTRL_KEY('h') || c == BACKSPACE) {
+    if (c== REMOVE_FORWARD || c == CTRL_KEY('h') || c == REMOVE_BACKWARD) {
       if (buflen != 0) buf[--buflen] = '\0';
     }
     else if(c== '\x1b') {
@@ -508,12 +485,44 @@ void editorMoveCursor(int key) {
 }
 
 
-void editorProcessKeypress() //TODO: replace key strokes with commands
+void editorMapKeyToCommand(key_stroke key, command command)
+{
+  mapAddValue(State.key_map, key, command);
+}
+
+void editorSetKeys()
+{
+  editorMapKeyToCommand(ARROW_UP,   MOVE_UP);
+  editorMapKeyToCommand(ARROW_DOWN, MOVE_DOWN);
+  editorMapKeyToCommand(ARROW_LEFT, MOVE_LEFT);
+  editorMapKeyToCommand(ARROW_RIGHT, MOVE_RIGHT);
+  
+  editorMapKeyToCommand(PAGE_UP, SCROLL_PAGE_UP);
+  editorMapKeyToCommand(PAGE_DOWN, SCROLL_PAGE_DOWN);
+
+  editorMapKeyToCommand(HOME, CURSOR_LINE_START);
+  editorMapKeyToCommand(END, CURSOR_LINE_END);
+  
+  editorMapKeyToCommand(BACKSPACE, REMOVE_BACKWARD);
+  editorMapKeyToCommand(DELETE, REMOVE_FORWARD);
+  editorMapKeyToCommand(CTRL_KEY('h'), REMOVE_BACKWARD);
+
+  editorMapKeyToCommand(CTRL_KEY('q'), QUIT);
+  editorMapKeyToCommand(CTRL_KEY('s'), SAVE);
+  
+  editorMapKeyToCommand(ENTER, NEWLINE);
+  
+  editorMapKeyToCommand(CTRL_KEY('l'), NOTHING);
+  editorMapKeyToCommand('\x1b', NOTHING);
+	
+}
+
+
+void editorProcessCommand(command command)
 {
   static int quit_times = QUIT_TIMES;
-  int c = editorReadKey();
-  switch (c) {
-  case '\r':
+  switch (command) {
+  case NEWLINE:
     editorInsertNewline();
     break;
   case QUIT:
@@ -526,47 +535,60 @@ void editorProcessKeypress() //TODO: replace key strokes with commands
     write(STDOUT_FILENO, "\x1b[H", 3);   // move to (0,0)
     exit(0);
     break;
-  case CTRL_KEY('s'):
+  case SAVE:
     editorSave();
     break;
-  case LINE_START:
+  case CURSOR_LINE_START:
     State.cx = 0;
     break;
-  case LINE_END:
+  case CURSOR_LINE_END:
     if(State.cy < State.numrows)
       State.cx = State.row[State.cy].size;
     break;
-  case PAGE_DOWN:
-  case PAGE_UP:
-    {
-      
+  case SCROLL_PAGE_DOWN:
+  case SCROLL_PAGE_UP:
+    {      
       int times = State.screen_height-1;
-      editorMoveCursorBy(c== PAGE_UP ? MOVE_UP : MOVE_DOWN, times);
+      editorMoveCursorBy(command== SCROLL_PAGE_UP ? MOVE_UP : MOVE_DOWN, times);
     }
     break;
   case MOVE_DOWN:
   case MOVE_LEFT:
   case MOVE_RIGHT:
   case MOVE_UP:
-    editorMoveCursor(c);
+    editorMoveCursor(command);
     break;
-  case BACKSPACE:
-  case CTRL_KEY('h'):
-  case DELETE:
-    if (c==DELETE) editorMoveCursor(MOVE_RIGHT);
+  case REMOVE_BACKWARD:
+  case REMOVE_FORWARD:
+    if (command==REMOVE_FORWARD) editorMoveCursor(MOVE_RIGHT);
     editorDelChar();
     break;
-  case CTRL_KEY('l'):
-  case '\x1b':
+  case NOTHING:
     break;
   default:
-    editorInsertChar(c);
-    break;
-    
-
+    editorInsertChar(command);
+    break;    
   }
   quit_times = QUIT_TIMES;
 }
+
+
+
+void editorProcessKeypress()
+{
+  int key = editorReadKey();
+  
+  int command = 0;
+  if ((command = mapGetValue(State.key_map, key))) {
+    editorProcessCommand(command);
+  } else  {
+    editorProcessCommand(key);
+  }
+}
+
+
+
+
 
 /*** output ***/
 void editorScroll() {
@@ -597,7 +619,7 @@ void editorDrawRows(abuf * ab)
     if (filerow >= State.numrows) {
       if (State.numrows == 0 && y== State.screen_height/3) {
 	char welcome[] = "Welcome to Kilo editor";
-	size_t welcomelen = sizeof(welcome);
+	int welcomelen = sizeof(welcome);
 	if (welcomelen > State.screen_width) welcomelen = State.screen_width;
 	int padding = (State.screen_width - welcomelen) /2;
 	if (padding) {
@@ -688,10 +710,12 @@ void init(void)
   State.filename = NULL;
   State.statusmsg[0] = '\0';
   State.statusmsg_time = 0;
+  State.key_map = malloc(sizeof(map));
+  mapInit(State.key_map);
   enableRawMode();
-
   if (getWindowSize(&State.screen_height, &State.screen_width) == -1) fatal_error("getWindowSize");
   State.screen_height -=2;
+  editorSetKeys();
 }
 
 int main(int argc, char ** argv) // TODO: turn  all special sequences into enums
